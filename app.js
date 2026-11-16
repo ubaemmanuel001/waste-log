@@ -704,6 +704,12 @@ $('#reg-export').addEventListener('click', () => {
 $('#sum-export').addEventListener('click', () => {
   const label = monthLabel(sumState.month);
   if (!monthEntries().length) { toast('No entries for this month', 'err'); return; }
+  download(`wastelog-summary-${sumState.month}.csv`, summaryCsv());
+  toast(`Report CSV downloaded — ${label}`);
+});
+
+/* ---------------- WhatsApp sharing ---------------- */
+function summaryCsv() {
   const rows = [sumState.lastHead, ...sumState.lastTable];
   // totals row: sum every numeric column of the current summary table
   if (sumState.lastTable.length) {
@@ -715,8 +721,59 @@ $('#sum-export').addEventListener('click', () => {
     });
     rows.push(totals);
   }
-  download(`wastelog-summary-${sumState.month}.csv`, csvOf(rows));
-  toast(`Summary CSV downloaded — ${label}`);
+  return csvOf(rows);
+}
+
+/** Share a CSV file through the phone's share menu (WhatsApp, etc.).
+ *  Works on Android + iOS. Falls back to a plain download on desktop. */
+async function shareCsvFile(fileName, csv, title) {
+  const file = new File([csv], fileName, { type: 'text/csv' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title });
+      toast('Shared ✓');
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;   // user closed the share menu
+      /* real share error → fall through to download */
+    }
+  }
+  download(fileName, csv);
+  toast('This device cannot share files directly — CSV downloaded instead. You can attach it in WhatsApp Web.', 'err');
+}
+
+function summaryText() {
+  const list = monthEntries();
+  const totalKg = list.reduce((s, e) => s + e.boxKg + e.wasteKg, 0);
+  const amt = list.reduce((s, e) => s + e.amount, 0);
+  const facs = new Set(list.map(e => e.facilityId)).size;
+  return `Waste Log — ${monthLabel(sumState.month)}\n` +
+         `Collected: ${kg(round2(totalKg))} kg from ${facs} businesses (${list.length} entries)\n` +
+         `Amount: ${money(round2(amt))}`;
+}
+
+/** "0803 123 4567" / "+234803..." / "234803..." → "2348031234567" */
+function waNumber(raw) {
+  let d = String(raw).replace(/[^\d]/g, '');
+  if (/^0\d{10}$/.test(d)) d = '234' + d.slice(1);   // Nigerian local format → country code
+  return d;
+}
+
+$('#reg-share').addEventListener('click', () => {
+  const rows = filteredEntries();
+  if (!rows.length) { toast('Nothing to send — no entries match the current filters', 'err'); return; }
+  shareCsvFile(`wastelog-entries-${todayStr()}.csv`, entriesCsv(rows), 'Waste Log entries');
+});
+$('#sum-share').addEventListener('click', () => {
+  if (!monthEntries().length) { toast('No entries for this month', 'err'); return; }
+  shareCsvFile(`wastelog-summary-${sumState.month}.csv`, summaryCsv(), 'Waste Log month report');
+});
+$('#wa-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const d = waNumber($('#wa-number').value);
+  if (d.length < 10) { toast('Enter a valid WhatsApp number, e.g. 0803 123 4567', 'err'); return; }
+  window.open('https://wa.me/' + d + '?text=' + encodeURIComponent(summaryText()), '_blank');
+  toast('Opening their WhatsApp chat…');
 });
 $('#sum-export-entries').addEventListener('click', () => {
   const rows = monthEntries();

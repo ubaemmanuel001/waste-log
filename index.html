@@ -149,6 +149,7 @@
         </label>
         <div class="spacer"></div>
         <button id="reg-export" class="btn">Download CSV</button>
+        <button id="reg-share" class="btn">Send to WhatsApp</button>
         <button id="reg-print" class="btn">Print</button>
       </div>
 
@@ -200,6 +201,7 @@
         </div>
         <div class="spacer"></div>
         <button id="sum-export" class="btn">Download Report CSV</button>
+        <button id="sum-share" class="btn">Send to WhatsApp</button>
         <button id="sum-export-entries" class="btn">Download Entries CSV</button>
         <button id="sum-print" class="btn">Print</button>
       </div>
@@ -216,6 +218,15 @@
 
       <h2 id="sum-title">Report</h2>
       <div class="table-wrap" id="sum-table-wrap"></div>
+
+      <div class="panel no-print wa-panel">
+        <h2>Send the summary to a phone number</h2>
+        <p class="hint">This opens their WhatsApp chat with the month’s totals as a message — handy for reporting to a boss or the client. To send the actual <strong>CSV file</strong>, use the “Send to WhatsApp” button above and pick their chat in the share menu.</p>
+        <form id="wa-form" class="wa-form">
+          <input type="tel" id="wa-number" placeholder="e.g. 0803 123 4567" inputmode="tel"/>
+          <button class="btn" type="submit">Open WhatsApp Chat</button>
+        </form>
+      </div>
     </section>
 
     <!-- ============ 4 · BUSINESSES ============ -->

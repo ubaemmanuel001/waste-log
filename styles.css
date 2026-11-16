@@ -208,6 +208,11 @@ input[type="date"],input[type="month"]{min-height:46px}
 .seg .btn{border:0;border-radius:0}
 .seg .btn.active{background:var(--green);color:#fff}
 
+/* WhatsApp summary panel */
+.wa-panel{margin-top:20px}
+.wa-form{display:flex;gap:10px;flex-wrap:wrap}
+.wa-form input{flex:1 1 220px;max-width:320px}
+
 /* ---------- ledger tables ---------- */
 .table-wrap{overflow:auto;border:1px solid var(--line-strong);border-radius:8px;background:#fff}
 table{border-collapse:collapse;width:100%;background:#fff;font-size:15px}

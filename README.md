@@ -47,6 +47,19 @@ It runs in two modes:
 - **Print** gives a tidy version of the paper log book with the company name at the top.
 - Works **offline** — it's just a file on the computer.
 
+## 📲 Sending to WhatsApp
+
+Two options, both free:
+
+- **"Send to WhatsApp"** (in All Records and Month Report) — puts the CSV file in the phone's
+  share menu. Tap **WhatsApp**, then the chat — your own number ("Message yourself"), a boss,
+  a client, or a group. Works on Android and iPhone. On desktop computers it simply downloads
+  the CSV instead.
+- **"Send the summary to a phone number"** (bottom of Month Report) — type any WhatsApp number
+  and it opens their chat with the month's totals as a ready-written message.
+  *(True no-tap file delivery to a number needs the paid WhatsApp Business API, so the file
+  itself always goes through the share menu.)*
+
 ## 📤 Taking data out
 
 - **All Records → Download CSV** — exactly the rows on screen (opens in Excel).
