@@ -1,0 +1,826 @@
+'use strict';
+/* =====================================================================
+   WasteLog — waste KG log book for data-entry people.
+   All data lives in the browser's localStorage. No server needed.
+   ===================================================================== */
+
+/* ---------------- helpers ---------------- */
+const $  = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const num = v => { const n = parseFloat(String(v).replace(/,/g, '')); return Number.isFinite(n) ? n : 0; };
+const round2 = n => Math.round(n * 100) / 100;
+
+const MONTHS_S = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const MONTHS_L = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const DAYS_S = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const DAYS_L = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+const toISO = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const todayStr = () => toISO(new Date());
+const parseISO = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const fmtDate = iso => { if (!iso) return ''; const d = parseISO(iso); return `${String(d.getDate()).padStart(2, '0')} ${MONTHS_S[d.getMonth()]} ${d.getFullYear()}`; };
+const fmtDateShort = iso => { if (!iso) return ''; const d = parseISO(iso); return `${String(d.getDate()).padStart(2, '0')} ${MONTHS_S[d.getMonth()]}`; };
+const dayName = (iso, long) => { const d = parseISO(iso); return (long ? DAYS_L : DAYS_S)[d.getDay()]; };
+
+const monthKeyOf = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+function monthRangeOf(key) { const [y, m] = key.split('-').map(Number); return [toISO(new Date(y, m - 1, 1)), toISO(new Date(y, m, 0))]; }
+function shiftMonth(key, dir) { const [y, m] = key.split('-').map(Number); return monthKeyOf(new Date(y, m - 1 + dir, 1)); }
+const monthLabel = key => { const [y, m] = key.split('-').map(Number); return `${MONTHS_L[m - 1]} ${y}`; };
+
+function weekRange(base = new Date()) {
+  const dow = (base.getDay() + 6) % 7;              // Monday = 0
+  const mon = new Date(base); mon.setDate(base.getDate() - dow);
+  const sun = new Date(mon);  sun.setDate(mon.getDate() + 6);
+  return [toISO(mon), toISO(sun)];
+}
+
+const kg = n => n.toLocaleString('en-NG', { maximumFractionDigits: 2 });
+const money = n => state.settings.currency + n.toLocaleString('en-NG', { maximumFractionDigits: 2 });
+
+/* ---------------- state / storage ---------------- */
+const STORE_KEY = 'wastelog.v1';
+const DEFAULT_SETTINGS = { company: '', currency: '₦', rate: 650, rememberReceivedBy: true, lastReceivedBy: '', welcomed: false };
+
+function freshState() {
+  return { facilities: [], entries: [], settings: { ...DEFAULT_SETTINGS } };
+}
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return freshState();
+    const s = JSON.parse(raw);
+    return {
+      facilities: Array.isArray(s.facilities) ? s.facilities : [],
+      entries: Array.isArray(s.entries) ? s.entries : [],
+      settings: Object.assign({}, DEFAULT_SETTINGS, s.settings || {})
+    };
+  } catch (e) { console.error(e); return freshState(); }
+}
+function saveState() {
+  localStorage.setItem(STORE_KEY, JSON.stringify({ facilities: state.facilities, entries: state.entries, settings: state.settings }));
+}
+let state = loadState();
+
+const facName = id => { const f = state.facilities.find(f => f.id === id); return f ? f.name : '(deleted business)'; };
+const sortedFacs = () => [...state.facilities].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+/* ---------------- toast + confirm ---------------- */
+function toast(msg, type = 'ok') {
+  const t = document.createElement('div');
+  t.className = 'toast ' + type;
+  t.textContent = msg;
+  $('#toast').appendChild(t);
+  setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 350); }, 2600);
+}
+function confirmDlg(msg, okLabel = 'Yes, continue') {
+  return new Promise(resolve => {
+    const dlg = $('#confirm-dialog');
+    let okClicked = false;
+    $('#confirm-msg').textContent = msg;
+    $('#confirm-ok').textContent = okLabel;
+    $('#confirm-ok').onclick = () => { okClicked = true; dlg.close(); };
+    $('#confirm-cancel').onclick = () => dlg.close();
+    dlg.onclose = () => resolve(okClicked);
+    dlg.showModal();
+  });
+}
+
+/* ---------------- view switching ---------------- */
+function switchView(name) {
+  $$('.maintab').forEach(t => t.classList.toggle('active', t.dataset.view === name));
+  $('#open-settings').classList.toggle('active', name === 'settings');
+  $$('.view').forEach(v => { v.hidden = v.id !== 'view-' + name; });
+  if (name === 'register') renderRegister();
+  if (name === 'summary')  renderSummary();
+  if (name === 'facilities') renderFacilities();
+  if (name === 'settings') renderSettings();
+  if (name === 'entry') $('#f-facility').focus();
+}
+$('#open-settings').addEventListener('click', () => switchView('settings'));
+
+/* ---------------- big confirmation banner (entry view) ---------------- */
+function showBanner(html) {
+  const b = $('#saved-banner');
+  b.innerHTML = html;
+  b.hidden = false;
+  clearTimeout(showBanner._t);
+  showBanner._t = setTimeout(() => { b.hidden = true; }, 6000);
+}
+
+/* ---------------- stats (entry view cards) ---------------- */
+function kgInRange(from, to) {
+  return state.entries.reduce((s, e) => (e.date >= from && e.date <= to ? s + e.boxKg + e.wasteKg : s), 0);
+}
+function renderStats() {
+  const t = todayStr();
+  const [ws, we] = weekRange();
+  const [ms, me] = monthRangeOf(monthKeyOf());
+  $('#stat-today').textContent = kg(round2(kgInRange(t, t))) + ' kg';
+  $('#stat-week').textContent  = kg(round2(kgInRange(ws, we))) + ' kg';
+  $('#stat-month').textContent = kg(round2(kgInRange(ms, me))) + ' kg';
+  const amt = state.entries.filter(e => e.date >= ms && e.date <= me).reduce((s, e) => s + e.amount, 0);
+  $('#stat-amt').textContent = money(round2(amt));
+}
+
+/* ---------------- facility combobox ---------------- */
+const comboInput = $('#f-facility');
+const comboId = $('#f-facility-id');
+const comboList = $('#combo-list');
+let comboItems = [];
+let comboActiveIndex = 0;
+
+function renderCombo() {
+  const q = comboInput.value.trim().toLowerCase();
+  let list = sortedFacs();
+  if (q) list = list.filter(f => f.name.toLowerCase().includes(q));
+  list = list.slice(0, 8);
+  comboItems = list;
+  comboActiveIndex = 0;
+  const exact = state.facilities.some(f => f.name.toLowerCase() === q);
+  let html = list.map((f, i) =>
+    `<button type="button" class="combo-item${i === 0 ? ' active' : ''}" data-i="${i}">
+       <span>${esc(f.name)}</span><small>${esc(f.category || '')}</small>
+     </button>`).join('');
+  if (q && !exact)
+    html += `<button type="button" class="combo-item new${list.length === 0 ? ' active' : ''}" data-new="1">
+               <span>➕ Add “${esc(comboInput.value.trim())}”</span><small>create new facility</small>
+             </button>`;
+  comboList.innerHTML = html || `<div class="combo-none">Start typing a facility name…</div>`;
+}
+comboInput.addEventListener('input', () => { comboId.value = ''; renderCombo(); comboList.hidden = false; });
+comboInput.addEventListener('focus', () => { renderCombo(); comboList.hidden = false; });
+comboInput.addEventListener('blur', () => setTimeout(() => comboList.hidden = true, 130));
+comboInput.addEventListener('keydown', e => {
+  if (comboList.hidden) return;
+  const items = $$('.combo-item', comboList);
+  if (!items.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    comboActiveIndex = e.key === 'ArrowDown'
+      ? (comboActiveIndex + 1) % items.length
+      : (comboActiveIndex - 1 + items.length) % items.length;
+    items.forEach((el, i) => el.classList.toggle('active', i === comboActiveIndex));
+    items[comboActiveIndex].scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') {
+    // pick highlighted (or first) suggestion instead of submitting the form
+    e.preventDefault();
+    items[comboActiveIndex >= 0 ? comboActiveIndex : 0].click();
+  } else if (e.key === 'Escape') {
+    comboList.hidden = true;
+  }
+});
+comboList.addEventListener('pointerdown', e => {
+  const b = e.target.closest('.combo-item');
+  if (!b) return;
+  e.preventDefault();
+  if (b.dataset.new) {
+    comboId.value = '';                       // name stays -> created on save
+  } else {
+    const f = comboItems[+b.dataset.i];
+    comboInput.value = f.name;
+    comboId.value = f.id;
+  }
+  comboList.hidden = true;
+  $('#f-box').focus();
+});
+
+/* ---------------- entry form ---------------- */
+let editingId = null;
+
+function recalc() {
+  const box = num($('#f-box').value), waste = num($('#f-waste').value), rate = num($('#f-rate').value);
+  const total = round2(box + waste);
+  $('#f-total').textContent = kg(total);
+  $('#f-amount').value = total ? round2(total * rate) : '';
+}
+['f-box', 'f-waste', 'f-rate'].forEach(id => $('#' + id).addEventListener('input', recalc));
+
+function resetForm() {
+  editingId = null;
+  $('#form-title').textContent = 'New Entry';
+  $('#save-btn').innerHTML = 'Save Entry';
+  $('#cancel-edit-btn').classList.add('hidden');
+  $('#f-date').value = todayStr();
+  comboInput.value = ''; comboId.value = ''; comboList.hidden = true;
+  $('#f-box').value = ''; $('#f-waste').value = '';
+  $('#f-rate').value = state.settings.rate;
+  $('#f-total').textContent = '0';
+  $('#f-amount').value = '';
+  $('#f-status').value = 'Paid';
+  $('#f-received').value = state.settings.rememberReceivedBy ? state.settings.lastReceivedBy : '';
+  $('#f-note').value = '';
+}
+
+function fillForm(e) {
+  editingId = e.id;
+  $('#form-title').textContent = 'Edit Entry';
+  $('#save-btn').innerHTML = 'Update Entry';
+  $('#cancel-edit-btn').classList.remove('hidden');
+  $('#f-date').value = e.date;
+  comboInput.value = facName(e.facilityId);
+  comboId.value = e.facilityId;
+  $('#f-box').value = e.boxKg; $('#f-waste').value = e.wasteKg;
+  $('#f-rate').value = e.rate; $('#f-amount').value = e.amount;
+  $('#f-total').textContent = kg(round2(e.boxKg + e.wasteKg));
+  $('#f-status').value = e.status;
+  $('#f-received').value = e.receivedBy;
+  $('#f-note').value = e.note || '';
+}
+
+$('#entry-form').addEventListener('submit', ev => {
+  ev.preventDefault();
+  const name = comboInput.value.trim();
+  if (!name) { toast('Please enter a facility name', 'err'); comboInput.focus(); return; }
+
+  let fac = (comboId.value && state.facilities.find(f => f.id === comboId.value))
+         || state.facilities.find(f => f.name.toLowerCase() === name.toLowerCase());
+  if (!fac) {
+    fac = { id: uid(), name, category: '', createdAt: new Date().toISOString() };
+    state.facilities.push(fac);
+    toast(`New business added: ${name}`);
+  }
+
+  const data = {
+    date: $('#f-date').value || todayStr(),
+    facilityId: fac.id,
+    boxKg: num($('#f-box').value),
+    wasteKg: num($('#f-waste').value),
+    rate: num($('#f-rate').value),
+    amount: round2(num($('#f-amount').value)),
+    receivedBy: $('#f-received').value.trim(),
+    status: $('#f-status').value,
+    note: $('#f-note').value.trim()
+  };
+
+  if (editingId) {
+    const i = state.entries.findIndex(x => x.id === editingId);
+    if (i > -1) state.entries[i] = { ...state.entries[i], ...data };
+    showBanner(`✓ Entry updated — <strong>${esc(fac.name)}</strong>: ${kg(round2(data.boxKg + data.wasteKg))} kg, ${money(data.amount)}`);
+  } else {
+    state.entries.push({ id: uid(), ...data, createdAt: new Date().toISOString() });
+    showBanner(`✓ Saved — <strong>${esc(fac.name)}</strong>: ${kg(round2(data.boxKg + data.wasteKg))} kg, ${money(data.amount)}`);
+  }
+
+  if (state.settings.rememberReceivedBy && data.receivedBy) state.settings.lastReceivedBy = data.receivedBy;
+  saveState();
+  resetForm();
+  renderAll();
+  comboInput.focus();
+});
+$('#cancel-edit-btn').addEventListener('click', () => { resetForm(); renderAll(); toast('Edit cancelled'); });
+
+/* entry edit / delete (shared by recent + register) */
+function handleEntryAction(id, act) {
+  const e = state.entries.find(x => x.id === id);
+  if (!e) return;
+  if (act === 'edit') {
+    resetForm();
+    fillForm(e);
+    switchView('entry');
+    toast(`Editing entry — ${facName(e.facilityId)}, ${fmtDate(e.date)}`);
+  } else if (act === 'del') {
+    confirmDlg(`Delete the entry for “${facName(e.facilityId)}” on ${fmtDate(e.date)}? This cannot be undone.`, 'Yes, delete it')
+      .then(ok => {
+        if (!ok) return;
+        state.entries = state.entries.filter(x => x.id !== id);
+        saveState(); renderAll(); toast('Entry deleted');
+      });
+  }
+}
+
+/* ---------------- recent entries (entry view) ---------------- */
+function renderRecent() {
+  const rows = [...state.entries].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).slice(0, 7);
+  $('#recent-empty').hidden = rows.length > 0;
+  $('#recent-body').innerHTML = rows.map(e => `
+    <tr data-id="${e.id}">
+      <td class="muted">${fmtDateShort(e.date)}</td>
+      <td><strong>${esc(facName(e.facilityId))}</strong><br><small>${kg(round2(e.boxKg + e.wasteKg))} kg · ${money(e.amount)}</small></td>
+      <td class="acts">
+        <button class="tbtn" data-act="edit">Edit</button>
+        <button class="tbtn danger" data-act="del">Delete</button>
+      </td>
+    </tr>`).join('');
+}
+$('#recent-body').addEventListener('click', ev => {
+  const b = ev.target.closest('button[data-act]');
+  if (!b) return;
+  handleEntryAction(b.closest('tr').dataset.id, b.dataset.act);
+});
+
+/* ---------------- log book (register) ---------------- */
+const regState = { q: '', range: 'month', from: '', to: '', facility: '', status: '', sortKey: 'date', sortDir: -1 };
+
+function regRange() {
+  const t = todayStr();
+  switch (regState.range) {
+    case 'today':     return [t, t];
+    case 'week':      return weekRange();
+    case 'month':     return monthRangeOf(monthKeyOf());
+    case 'lastmonth': return monthRangeOf(shiftMonth(monthKeyOf(), -1));
+    case 'custom':    return [regState.from || '0000-01-01', regState.to || '9999-12-31'];
+    default:          return null;               // all time
+  }
+}
+function regLabel() {
+  const r = regRange();
+  if (!r) return 'All time';
+  const span = `${fmtDate(r[0])} – ${fmtDate(r[1])}`;
+  const names = { today: 'Today', week: 'This week', month: 'This month', lastmonth: 'Last month' };
+  return regState.range === 'custom' ? span : `${names[regState.range]} (${span})`;
+}
+
+function filteredEntries() {
+  const r = regRange();
+  const q = regState.q.trim().toLowerCase();
+  let rows = state.entries.filter(e => {
+    if (r && (e.date < r[0] || e.date > r[1])) return false;
+    if (regState.facility && e.facilityId !== regState.facility) return false;
+    if (regState.status && e.status !== regState.status) return false;
+    if (q) {
+      const hay = `${facName(e.facilityId)} ${e.receivedBy} ${e.note || ''} ${e.date} ${e.status}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  const d = regState.sortDir;
+  const key = regState.sortKey;
+  rows.sort((a, b) => {
+    let va, vb;
+    if (key === 'name')            { va = facName(a.facilityId).toLowerCase(); vb = facName(b.facilityId).toLowerCase(); }
+    else if (key === 'box')        { va = a.boxKg; vb = b.boxKg; }
+    else if (key === 'waste')      { va = a.wasteKg; vb = b.wasteKg; }
+    else if (key === 'total')      { va = a.boxKg + a.wasteKg; vb = b.boxKg + b.wasteKg; }
+    else if (key === 'amount')     { va = a.amount; vb = b.amount; }
+    else                           { va = a.date + (a.createdAt || ''); vb = b.date + (b.createdAt || ''); }
+    if (va < vb) return -1 * d;
+    if (va > vb) return  1 * d;
+    return facName(a.facilityId).localeCompare(facName(b.facilityId));
+  });
+  return rows;
+}
+
+function renderRegister() {
+  // facility filter options
+  const sel = $('#reg-facility');
+  sel.innerHTML = '<option value="">All businesses</option>' +
+    sortedFacs().map(f => `<option value="${f.id}"${f.id === regState.facility ? ' selected' : ''}>${esc(f.name)}</option>`).join('');
+
+  // sort indicators
+  $$('#reg-table th.sortable').forEach(th => {
+    $('.dir', th).textContent = th.dataset.sort === regState.sortKey ? (regState.sortDir === 1 ? '▲' : '▼') : '';
+  });
+
+  const rows = filteredEntries();
+  $('#reg-empty').hidden = rows.length > 0;
+  $('#reg-body').innerHTML = rows.map((e, i) => `
+    <tr data-id="${e.id}">
+      <td class="num muted">${i + 1}</td>
+      <td style="white-space:nowrap">${fmtDate(e.date)}</td>
+      <td>${dayName(e.date)}</td>
+      <td><strong>${esc(facName(e.facilityId))}</strong>${e.note ? `<div class="note">📝 ${esc(e.note)}</div>` : ''}</td>
+      <td class="num">${kg(e.boxKg)}</td>
+      <td class="num">${kg(e.wasteKg)}</td>
+      <td class="num"><strong>${kg(round2(e.boxKg + e.wasteKg))}</strong></td>
+      <td class="num muted">${e.rate ? money(e.rate) : ''}</td>
+      <td class="num"><strong>${money(e.amount)}</strong></td>
+      <td>${esc(e.receivedBy)}</td>
+      <td><span class="st ${e.status.toLowerCase()}">${esc(e.status)}</span></td>
+      <td class="acts">
+        <button class="tbtn" data-act="edit">Edit</button>
+        <button class="tbtn danger" data-act="del">Delete</button>
+      </td>
+    </tr>`).join('');
+
+  // totals
+  const box = rows.reduce((s, e) => s + e.boxKg, 0);
+  const waste = rows.reduce((s, e) => s + e.wasteKg, 0);
+  const amt = rows.reduce((s, e) => s + e.amount, 0);
+  $('#reg-cnt').textContent = `${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}`;
+  $('#t-box').textContent = kg(round2(box));
+  $('#t-waste').textContent = kg(round2(waste));
+  $('#t-total').textContent = kg(round2(box + waste));
+  $('#t-amount').textContent = money(round2(amt));
+}
+
+/* register events */
+$('#reg-search').addEventListener('input', e => { regState.q = e.target.value; renderRegister(); });
+$('#reg-range').addEventListener('change', e => {
+  regState.range = e.target.value;
+  $('#reg-custom').classList.toggle('hidden', regState.range !== 'custom');
+  renderRegister();
+});
+$('#reg-from').addEventListener('change', e => { regState.from = e.target.value; renderRegister(); });
+$('#reg-to').addEventListener('change', e => { regState.to = e.target.value; renderRegister(); });
+$('#reg-facility').addEventListener('change', e => { regState.facility = e.target.value; renderRegister(); });
+$('#reg-status').addEventListener('change', e => { regState.status = e.target.value; renderRegister(); });
+$('#reg-table').addEventListener('click', e => {
+  const th = e.target.closest('th.sortable');
+  if (th) {
+    const k = th.dataset.sort;
+    if (regState.sortKey === k) regState.sortDir *= -1;
+    else { regState.sortKey = k; regState.sortDir = k === 'date' ? -1 : 1; }
+    renderRegister();
+    return;
+  }
+  const b = e.target.closest('button[data-act]');
+  if (b) handleEntryAction(b.closest('tr').dataset.id, b.dataset.act);
+});
+
+/* ---------------- month end summary ---------------- */
+const sumState = { month: monthKeyOf(), mode: 'facility' };
+
+function renderSummary() {
+  $('#sum-month').value = sumState.month;
+  const [from, to] = monthRangeOf(sumState.month);
+  const list = state.entries.filter(e => e.date >= from && e.date <= to);
+  const label = monthLabel(sumState.month);
+  $('#sum-title').textContent = `Month Report — ${label} (${sumState.mode === 'facility' ? 'per business, A–Z' : 'per day'})`;
+
+  const box = list.reduce((s, e) => s + e.boxKg, 0);
+  const waste = list.reduce((s, e) => s + e.wasteKg, 0);
+  const total = box + waste;
+  const amt = list.reduce((s, e) => s + e.amount, 0);
+  const days = new Set(list.map(e => e.date));
+  $('#sum-kg').textContent = kg(round2(total));
+  $('#sum-box').textContent = kg(round2(box));
+  $('#sum-waste').textContent = kg(round2(waste));
+  $('#sum-amt').textContent = money(round2(amt));
+  $('#sum-entries').textContent = list.length;
+  $('#sum-facs').textContent = new Set(list.map(e => e.facilityId)).size;
+  $('#sum-avg').textContent = days.size ? kg(round2(total / days.size)) : '0';
+
+  let head, body, totals;
+  if (sumState.mode === 'facility') {
+    const map = new Map();
+    list.forEach(e => {
+      const k = e.facilityId;
+      if (!map.has(k)) map.set(k, { name: facName(k), n: 0, box: 0, waste: 0, amt: 0 });
+      const g = map.get(k);
+      g.n++; g.box += e.boxKg; g.waste += e.wasteKg; g.amt += e.amount;
+    });
+    const groups = [...map.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    head = ['S/N', 'Business', 'Entries', 'Box kg', 'Waste kg', 'Total kg', 'Amount'];
+    body = groups.map((g, i) => [i + 1, esc(g.name), g.n, kg(round2(g.box)), kg(round2(g.waste)), `<strong>${kg(round2(g.box + g.waste))}</strong>`, `<strong>${money(round2(g.amt))}</strong>`]);
+    totals = ['', 'TOTAL', list.length, kg(round2(box)), kg(round2(waste)), kg(round2(total)), money(round2(amt))];
+    sumState.lastTable = groups.map(g => [g.name, g.n, round2(g.box), round2(g.waste), round2(g.box + g.waste), round2(g.amt)]);
+    sumState.lastHead = ['Business', 'Entries', 'Box KG', 'Waste KG', 'Total KG', 'Amount'];
+  } else {
+    const map = new Map();
+    list.forEach(e => {
+      if (!map.has(e.date)) map.set(e.date, { n: 0, box: 0, waste: 0, amt: 0 });
+      const g = map.get(e.date);
+      g.n++; g.box += e.boxKg; g.waste += e.wasteKg; g.amt += e.amount;
+    });
+    const groups = [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    head = ['Date', 'Day', 'Entries', 'Box kg', 'Waste kg', 'Total kg', 'Amount'];
+    body = groups.map(([date, g]) => [fmtDate(date), dayName(date, true), g.n, kg(round2(g.box)), kg(round2(g.waste)), `<strong>${kg(round2(g.box + g.waste))}</strong>`, `<strong>${money(round2(g.amt))}</strong>`]);
+    totals = ['TOTAL', '', list.length, kg(round2(box)), kg(round2(waste)), kg(round2(total)), money(round2(amt))];
+    sumState.lastTable = groups.map(([date, g]) => [date, dayName(date, true), g.n, round2(g.box), round2(g.waste), round2(g.box + g.waste), round2(g.amt)]);
+    sumState.lastHead = ['Date', 'Day', 'Entries', 'Box KG', 'Waste KG', 'Total KG', 'Amount'];
+  }
+
+  const wrap = $('#sum-table-wrap');
+  if (!list.length) {
+    wrap.innerHTML = `<div class="empty">No entries in ${label}.<br>Add entries in “New Entry”, then come back here.</div>`;
+    return;
+  }
+  wrap.innerHTML = `<table>
+    <thead><tr>${head.map(h => `<th${['Box kg','Waste kg','Total kg','Amount','Entries'].includes(h) ? ' class="num"' : ''}>${h}</th>`).join('')}</tr></thead>
+    <tbody>${body.map(r => `<tr>${r.map((c, i) => `<td${i >= 2 ? ' class="num"' : ''}>${c}</td>`).join('')}</tr>`).join('')}</tbody>
+    <tfoot><tr>${totals.map((c, i) => `<td${i >= 2 ? ' class="num"' : ''}><strong>${c}</strong></td>`).join('')}</tr></tfoot>
+  </table>`;
+}
+$('#sum-prev').addEventListener('click', () => { sumState.month = shiftMonth(sumState.month, -1); renderSummary(); });
+$('#sum-next').addEventListener('click', () => { sumState.month = shiftMonth(sumState.month, 1); renderSummary(); });
+$('#sum-month').addEventListener('change', e => { if (e.target.value) { sumState.month = e.target.value; renderSummary(); } });
+$('#sum-mode-facility').addEventListener('click', () => { sumState.mode = 'facility'; setSumMode(); renderSummary(); });
+$('#sum-mode-day').addEventListener('click', () => { sumState.mode = 'day'; setSumMode(); renderSummary(); });
+function setSumMode() {
+  $('#sum-mode-facility').classList.toggle('active', sumState.mode === 'facility');
+  $('#sum-mode-day').classList.toggle('active', sumState.mode === 'day');
+}
+
+/* ---------------- facilities ---------------- */
+function facStats() {
+  const map = new Map();
+  state.entries.forEach(e => {
+    if (!map.has(e.facilityId)) map.set(e.facilityId, { n: 0, kg: 0, amt: 0, last: '' });
+    const g = map.get(e.facilityId);
+    g.n++; g.kg += e.boxKg + e.wasteKg; g.amt += e.amount;
+    if (e.date > g.last) g.last = e.date;
+  });
+  return map;
+}
+function renderFacilities() {
+  const q = $('#fac-search').value.trim().toLowerCase();
+  const stats = facStats();
+  const list = sortedFacs().filter(f =>
+    !q || f.name.toLowerCase().includes(q) || (f.category || '').toLowerCase().includes(q));
+
+  const wrap = $('#fac-list');
+  if (!list.length) {
+    wrap.innerHTML = `<div class="empty">${q ? 'No businesses match your search.' : 'No businesses yet.<br>Click “Add New Business”, or just type a new name when writing an entry.'}</div>`;
+    return;
+  }
+  let letter = '', html = '';
+  list.forEach(f => {
+    const L = (f.name[0] || '#').toUpperCase();
+    if (L !== letter) { letter = L; html += `<h3 class="letter">${esc(L)}</h3>`; }
+    const s = stats.get(f.id) || { n: 0, kg: 0, amt: 0, last: '' };
+    html += `
+      <div class="fac-row" data-id="${f.id}">
+        <div class="fac-main"><strong>${esc(f.name)}</strong><small>${esc(f.category || '—')}</small></div>
+        <div class="fac-stats">
+          <span><b>${s.n}</b> entries</span>
+          <span><b>${kg(round2(s.kg))}</b> kg</span>
+          <span><b>${money(round2(s.amt))}</b></span>
+          <span>last: <b>${s.last ? fmtDate(s.last) : '—'}</b></span>
+        </div>
+        <div class="fac-actions">
+          <button class="tbtn" data-act="edit">Edit</button>
+          <button class="tbtn danger" data-act="del">Delete</button>
+        </div>
+      </div>`;
+  });
+  wrap.innerHTML = html;
+}
+$('#fac-search').addEventListener('input', renderFacilities);
+$('#fac-add').addEventListener('click', () => openFacDialog(null));
+
+let editingFac = null;
+function openFacDialog(fac) {
+  editingFac = fac;
+  $('#fac-dialog-title').textContent = fac ? 'Edit Business' : 'Add Business';
+  $('#fac-name').value = fac ? fac.name : '';
+  $('#fac-category').value = fac ? (fac.category || '') : '';
+  $('#fac-dialog').showModal();
+  $('#fac-name').focus();
+}
+$('#fac-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const name = $('#fac-name').value.trim();
+  if (!name) { toast('Business name is required', 'err'); return; }
+  const dupe = state.facilities.find(f => f.name.toLowerCase() === name.toLowerCase() && f.id !== (editingFac && editingFac.id));
+  if (dupe) { toast('A business with this name already exists', 'err'); return; }
+  const category = $('#fac-category').value.trim();
+  if (editingFac) {
+    editingFac.name = name; editingFac.category = category;
+    toast('Business updated ✓');
+  } else {
+    state.facilities.push({ id: uid(), name, category, createdAt: new Date().toISOString() });
+    toast(`Business added: ${name} ✓`);
+  }
+  saveState(); renderAll();
+  $('#fac-dialog').close();
+});
+$('#fac-cancel').addEventListener('click', () => $('#fac-dialog').close());
+
+$('#fac-list').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-act]');
+  if (!b) return;
+  const id = b.closest('.fac-row').dataset.id;
+  const fac = state.facilities.find(f => f.id === id);
+  if (!fac) return;
+  if (b.dataset.act === 'edit') openFacDialog(fac);
+  else {
+    const count = state.entries.filter(en => en.facilityId === id).length;
+    if (count > 0) { toast(`Cannot delete “${fac.name}” — it has ${count} logged ${count === 1 ? 'entry' : 'entries'}.`, 'err'); return; }
+    const ok = await confirmDlg(`Delete business “${fac.name}”? It has no entries.`, 'Yes, delete it');
+    if (!ok) return;
+    state.facilities = state.facilities.filter(f => f.id !== id);
+    saveState(); renderAll(); toast('Business deleted');
+  }
+});
+
+/* ---------------- CSV / backup / print ---------------- */
+function csvOf(rows) {
+  return '\uFEFF' + rows.map(r => r.map(csvCell).join(',')).join('\r\n');
+}
+const csvCell = v => {
+  v = String(v ?? '');
+  return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+};
+function download(name, content, type) {
+  const blob = new Blob([content], { type: type || 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 800);
+}
+function entriesRows(list) {
+  return [...list].sort((a, b) => a.date.localeCompare(b.date) || (a.createdAt || '').localeCompare(b.createdAt || ''))
+    .map((e, i) => [i + 1, e.date, dayName(e.date), facName(e.facilityId), e.boxKg, e.wasteKg, round2(e.boxKg + e.wasteKg), e.rate, e.amount, e.receivedBy, e.status, e.note || '']);
+}
+function entriesCsv(list) {
+  const head = ['S/N', 'Date', 'Day', 'Business', 'Box KG', 'Waste KG', 'Total KG', 'Rate', 'Amount', 'Received By', 'Status', 'Notes'];
+  return csvOf([head, ...entriesRows(list)]);
+}
+function monthEntries() {
+  const [from, to] = monthRangeOf(sumState.month);
+  return state.entries.filter(e => e.date >= from && e.date <= to);
+}
+
+$('#reg-export').addEventListener('click', () => {
+  const rows = filteredEntries();
+  if (!rows.length) { toast('Nothing to export — no entries match the current filters', 'err'); return; }
+  download(`wastelog-entries-${todayStr()}.csv`, entriesCsv(rows));
+  toast(`CSV downloaded — ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}`);
+});
+$('#sum-export').addEventListener('click', () => {
+  const label = monthLabel(sumState.month);
+  if (!monthEntries().length) { toast('No entries for this month', 'err'); return; }
+  const rows = [sumState.lastHead, ...sumState.lastTable];
+  // totals row: sum every numeric column of the current summary table
+  if (sumState.lastTable.length) {
+    const rows2 = sumState.lastTable;
+    const totals = sumState.lastHead.map((h, i) => {
+      if (i === 0) return 'TOTAL';
+      if (rows2.every(r => typeof r[i] === 'number')) return round2(rows2.reduce((s, r) => s + r[i], 0));
+      return '';
+    });
+    rows.push(totals);
+  }
+  download(`wastelog-summary-${sumState.month}.csv`, csvOf(rows));
+  toast(`Summary CSV downloaded — ${label}`);
+});
+$('#sum-export-entries').addEventListener('click', () => {
+  const rows = monthEntries();
+  if (!rows.length) { toast('No entries for this month', 'err'); return; }
+  download(`wastelog-entries-${sumState.month}.csv`, entriesCsv(rows));
+  toast(`Entries CSV downloaded — ${monthLabel(sumState.month)}`);
+});
+$('#csv-all').addEventListener('click', () => {
+  if (!state.entries.length) { toast('No entries to export yet', 'err'); return; }
+  download(`wastelog-entries-all-${todayStr()}.csv`, entriesCsv(state.entries));
+  toast('All-entries CSV downloaded');
+});
+$('#csv-facilities').addEventListener('click', () => {
+  if (!state.facilities.length) { toast('No facilities to export yet', 'err'); return; }
+  const stats = facStats();
+  const rows = [['Business', 'Kind', 'Entries', 'Total KG', 'Total Amount', 'Last Entry']];
+  sortedFacs().forEach(f => {
+    const s = stats.get(f.id) || { n: 0, kg: 0, amt: 0, last: '' };
+    rows.push([f.name, f.category || '', s.n, round2(s.kg), round2(s.amt), s.last]);
+  });
+  download(`wastelog-facilities-${todayStr()}.csv`, csvOf(rows));
+  toast('Facilities CSV downloaded');
+});
+
+$('#backup-export').addEventListener('click', () => {
+  download(`wastelog-backup-${todayStr()}.json`,
+    JSON.stringify({ app: 'WasteLog', version: 1, exportedAt: new Date().toISOString(), ...state }, null, 2),
+    'application/json');
+  toast('Backup downloaded — keep it somewhere safe!');
+});
+$('#backup-import').addEventListener('click', () => $('#import-file').click());
+$('#import-file').addEventListener('change', e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (!Array.isArray(data.facilities) || !Array.isArray(data.entries)) throw new Error('bad file');
+      const ok = await confirmDlg(`Restore backup? This replaces everything currently in the app with the backup from ${file.name}.`, 'Yes, restore it');
+      if (!ok) return;
+      state = { facilities: data.facilities, entries: data.entries, settings: Object.assign({}, DEFAULT_SETTINGS, data.settings || {}) };
+      saveState();
+      resetForm();
+      sumState.month = monthKeyOf();
+      renderAll();
+      toast('Backup restored ✓');
+    } catch (err) {
+      console.error(err);
+      toast('That file is not a valid WasteLog backup', 'err');
+    }
+  };
+  reader.readAsText(file);
+});
+
+function setPrintHeader(title) {
+  const c = state.settings.company || 'WasteLog';
+  $('#print-header').innerHTML = `<strong>${esc(c)}</strong> — ${esc(title)}<br><small>Printed ${new Date().toLocaleString('en-GB')}</small>`;
+}
+$('#reg-print').addEventListener('click', () => {
+  renderRegister();
+  setPrintHeader(`Log Book — ${regLabel()} — sorted by ${regState.sortKey === 'name' ? 'facility name' : regState.sortKey}`);
+  window.print();
+});
+$('#sum-print').addEventListener('click', () => {
+  setPrintHeader(`Month End Summary — ${monthLabel(sumState.month)} (${sumState.mode === 'facility' ? 'by facility' : 'by day'})`);
+  window.print();
+});
+
+/* ---------------- settings ---------------- */
+function updateBrand() {
+  $('#brand-sub').textContent = state.settings.company || 'Kilograms of waste collected from businesses';
+}
+function renderSettings() {
+  $('#set-company').value = state.settings.company;
+  $('#set-rate').value = state.settings.rate;
+  $('#set-currency').value = state.settings.currency;
+  $('#set-remember').checked = state.settings.rememberReceivedBy;
+}
+$('#set-company').addEventListener('input', e => { state.settings.company = e.target.value.trim(); saveState(); updateBrand(); });
+$('#set-rate').addEventListener('change', e => {
+  state.settings.rate = Math.max(0, num(e.target.value));
+  saveState();
+  if (!editingId) { $('#f-rate').value = state.settings.rate; recalc(); }
+  toast('Default rate updated');
+});
+$('#set-currency').addEventListener('input', e => {
+  state.settings.currency = e.target.value || '₦';
+  saveState(); renderAll();
+});
+$('#set-remember').addEventListener('change', e => { state.settings.rememberReceivedBy = e.target.checked; saveState(); });
+
+$('#clear-all').addEventListener('click', async () => {
+  const ok = await confirmDlg('Delete ALL facilities and entries from this browser? This cannot be undone. Export a backup first!', 'Yes, delete everything');
+  if (!ok) return;
+  state = freshState();
+  saveState(); resetForm(); sumState.month = monthKeyOf(); renderAll();
+  toast('All data deleted');
+});
+
+/* ---------------- sample data ---------------- */
+$('#sample-load').addEventListener('click', async () => {
+  if (state.entries.length) {
+    const ok = await confirmDlg('This adds example entries on top of your current data. Continue?', 'Yes, add samples');
+    if (!ok) return;
+  }
+  loadSampleData();
+});
+
+function loadSampleData() {
+  const now = new Date();
+  const dayCap = now.getDate();
+  const facDefs = [
+    ['B-Rock Hospital', 'Hospital'], ['Dr Lab', 'Laboratory'], ['Adebayo Specialist', 'Hospital'],
+    ['St Mary Hospital', 'Hospital'], ['Dream Lab', 'Laboratory'], ['Blueshore Hospital', 'Hospital'],
+    ['Blue Sky Hospital', 'Hospital'], ['Maedonant Hospital', 'Hospital'], ['Healing Vessel', 'Hospital'],
+    ['Nikad Hospital', 'Hospital'], ['Afrique Hospital', 'Hospital'], ["O'Kem Lab", 'Laboratory']
+  ];
+  const ids = facDefs.map(([name, category]) => {
+    let f = state.facilities.find(x => x.name.toLowerCase() === name.toLowerCase());
+    if (!f) { f = { id: uid(), name, category, createdAt: new Date().toISOString() }; state.facilities.push(f); }
+    return f.id;
+  });
+  const receivers = ['Sofiat', 'Grace', 'Precious', 'Zainab', 'Celestina', 'Tola'];
+  // [facIndex, day, boxKg, wasteKg]
+  const rows = [
+    [0, 3, 6, 10], [1, 4, 1, 3], [2, 5, 10, 36], [2, 5, 24, 0], [4, 6, 2, 6],
+    [6, 7, 6, 20], [11, 7, 0, 6], [7, 10, 2, 2], [8, 5, 0, 8], [8, 12, 2, 8],
+    [9, 9, 1, 4], [10, 16, 8, 0], [11, 18, 4, 0], [3, 20, 5, 5], [5, 22, 3, 3]
+  ];
+  rows.forEach(([fi, day, box, waste], i) => {
+    const d = Math.min(day, dayCap);
+    const date = `${monthKeyOf(now)}-${String(d).padStart(2, '0')}`;
+    const total = box + waste;
+    state.entries.push({
+      id: uid(), date, facilityId: ids[fi], boxKg: box, wasteKg: waste,
+      rate: state.settings.rate, amount: round2(total * state.settings.rate),
+      receivedBy: receivers[i % receivers.length], status: 'Paid', note: '',
+      createdAt: new Date(date + 'T10:0' + (i % 10) + ':00').toISOString()
+    });
+  });
+  saveState(); resetForm(); renderAll();
+  toast('Sample data loaded — explore the tabs! 🎉');
+}
+
+/* ---------------- boot ---------------- */
+function renderAll() {
+  renderStats();
+  renderRecent();
+  renderRegister();
+  renderSummary();
+  renderFacilities();
+  updateBrand();
+  $$('.cur-sym').forEach(el => el.textContent = state.settings.currency);
+}
+
+$('#tabs').addEventListener('click', e => {
+  const t = e.target.closest('.maintab');
+  if (t) switchView(t.dataset.view);
+});
+
+resetForm();
+sumState.month = monthKeyOf();
+$('#sum-month').value = sumState.month;
+renderAll();
+switchView('entry');
+if (document.activeElement) document.activeElement.blur(); // don't auto-open the dropdown on load
+
+if (!state.settings.welcomed) {
+  state.settings.welcomed = true;
+  saveState();
+  if (!state.entries.length) {
+    setTimeout(() => toast('Welcome! Open “Settings & Backup” (top right) to load example entries and try it out.'), 600);
+  }
+}

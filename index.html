@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>The Waste Log Book</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📒</text></svg>"/>
+<link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+
+<div id="print-header" class="print-only"></div>
+
+<header class="topbar no-print">
+  <div class="topbar-inner">
+    <div class="brand">
+      <h1>The Waste Log Book</h1>
+      <p id="brand-sub">Kilograms of waste collected from businesses</p>
+    </div>
+    <button id="open-settings" class="settings-link">Settings &amp; Backup</button>
+  </div>
+</header>
+
+<nav class="maintabs no-print" id="tabs">
+  <button class="maintab active" data-view="entry"><span class="tnum">1</span> New Entry</button>
+  <button class="maintab" data-view="register"><span class="tnum">2</span> All Records</button>
+  <button class="maintab" data-view="summary"><span class="tnum">3</span> Month Report</button>
+  <button class="maintab" data-view="facilities"><span class="tnum">4</span> Businesses</button>
+</nav>
+
+<main>
+  <div class="sheet">
+
+    <!-- ============ 1 · NEW ENTRY ============ -->
+    <section id="view-entry" class="view">
+      <div id="saved-banner" class="banner no-print" hidden></div>
+
+      <div class="statline no-print">
+        <div class="stat"><small>Today</small><strong id="stat-today">0 kg</strong></div>
+        <div class="stat"><small>This week</small><strong id="stat-week">0 kg</strong></div>
+        <div class="stat"><small>This month</small><strong id="stat-month">0 kg</strong></div>
+        <div class="stat"><small>Money this month</small><strong id="stat-amt">0</strong></div>
+      </div>
+
+      <div class="entry-grid">
+        <form id="entry-form" autocomplete="off" novalidate>
+          <h2 id="form-title">Write a new entry</h2>
+
+          <div class="form-grid">
+            <label>Date
+              <input type="date" id="f-date" required/>
+            </label>
+            <label class="span2">Business name
+              <div class="combo">
+                <input type="text" id="f-facility" placeholder="Start typing… pick one, or type a new business" required/>
+                <input type="hidden" id="f-facility-id"/>
+                <div id="combo-list" class="combo-list" hidden></div>
+              </div>
+            </label>
+            <label>Box KG
+              <input type="number" id="f-box" min="0" step="0.1" inputmode="decimal" placeholder="0"/>
+            </label>
+            <label>Waste KG
+              <input type="number" id="f-waste" min="0" step="0.1" inputmode="decimal" placeholder="0"/>
+            </label>
+            <label>Total KG
+              <div class="bigcalc" id="f-total">0</div>
+            </label>
+            <label>Rate per kg
+              <div class="cur-wrap"><span class="cur-sym">₦</span><input type="number" id="f-rate" min="0" step="0.5" inputmode="decimal"/></div>
+            </label>
+            <label>Amount
+              <div class="cur-wrap"><span class="cur-sym">₦</span><input type="number" id="f-amount" min="0" step="1"/></div>
+            </label>
+            <label>Payment
+              <select id="f-status">
+                <option>Paid</option>
+                <option>Pending</option>
+              </select>
+            </label>
+            <label>Received by
+              <input type="text" id="f-received" placeholder="Staff name"/>
+            </label>
+            <label>Note
+              <input type="text" id="f-note" placeholder="Optional"/>
+            </label>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn primary big" id="save-btn">Save Entry</button>
+            <button type="button" class="btn ghost hidden" id="cancel-edit-btn">Cancel Edit</button>
+          </div>
+          <!-- <p class="hint">The Total and Amount work themselves out: Total is Box&nbsp;KG + Waste&nbsp;KG, and Amount is Total × Rate. You can still type your own Amount if the price is different.</p> -->
+        </form>
+
+        <aside class="panel no-print">
+          <h2>Latest entries</h2>
+          <div id="recent-empty" class="empty">Nothing logged yet.<br>Entries you save will appear here.</div>
+          <table class="mini"><tbody id="recent-body"></tbody></table>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ============ 2 · ALL RECORDS ============ -->
+    <section id="view-register" class="view" hidden>
+      <div class="controls no-print">
+        <input type="search" id="reg-search" class="grow" placeholder="Search… business, staff, note"/>
+        <label class="inline">Show
+          <select id="reg-range" title="Date range">
+            <option value="month">This month</option>
+            <option value="week">This week</option>
+            <option value="today">Today</option>
+            <option value="lastmonth">Last month</option>
+            <option value="all">Everything</option>
+            <option value="custom">Choose dates…</option>
+          </select>
+        </label>
+        <span id="reg-custom" class="custom-range hidden">
+          <input type="date" id="reg-from"/> <span class="muted">to</span> <input type="date" id="reg-to"/>
+        </span>
+        <label class="inline">Business
+          <select id="reg-facility"><option value="">All businesses</option></select>
+        </label>
+        <label class="inline">Payment
+          <select id="reg-status">
+            <option value="">All</option>
+            <option>Paid</option>
+            <option>Pending</option>
+          </select>
+        </label>
+        <div class="spacer"></div>
+        <button id="reg-export" class="btn">Download CSV</button>
+        <button id="reg-print" class="btn">Print</button>
+      </div>
+
+      <div class="table-wrap">
+        <table id="reg-table">
+          <thead>
+            <tr>
+              <th>S/N</th>
+              <th class="sortable" data-sort="date">Date <span class="dir"></span></th>
+              <th>Day</th>
+              <th class="sortable" data-sort="name">Business <span class="dir"></span></th>
+              <th class="num sortable" data-sort="box">Box kg <span class="dir"></span></th>
+              <th class="num sortable" data-sort="waste">Waste kg <span class="dir"></span></th>
+              <th class="num sortable" data-sort="total">Total kg <span class="dir"></span></th>
+              <th class="num">Rate</th>
+              <th class="num sortable" data-sort="amount">Amount <span class="dir"></span></th>
+              <th>Received by</th>
+              <th>Payment</th>
+              <th class="acts"></th>
+            </tr>
+          </thead>
+          <tbody id="reg-body"></tbody>
+          <tfoot>
+            <tr>
+              <td colspan="4" id="reg-cnt" class="strong"></td>
+              <td class="num strong" id="t-box"></td>
+              <td class="num strong" id="t-waste"></td>
+              <td class="num strong" id="t-total"></td>
+              <td></td>
+              <td class="num strong" id="t-amount"></td>
+              <td colspan="3"></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div id="reg-empty" class="empty hidden">No entries match your search or filters.<br>Try “Everything” in the Show box, or clear the search.</div>
+    </section>
+
+    <!-- ============ 3 · MONTH REPORT ============ -->
+    <section id="view-summary" class="view" hidden>
+      <div class="controls no-print">
+        <button id="sum-prev" class="btn" title="Previous month">← Previous</button>
+        <input type="month" id="sum-month"/>
+        <button id="sum-next" class="btn" title="Next month">Next →</button>
+        <span class="inline muted">Show:</span>
+        <div class="seg">
+          <button id="sum-mode-facility" class="btn small active">Per Business (A–Z)</button>
+          <button id="sum-mode-day" class="btn small">Per Day</button>
+        </div>
+        <div class="spacer"></div>
+        <button id="sum-export" class="btn">Download Report CSV</button>
+        <button id="sum-export-entries" class="btn">Download Entries CSV</button>
+        <button id="sum-print" class="btn">Print</button>
+      </div>
+
+      <div class="statline no-print">
+        <div class="stat"><small>Total kg</small><strong id="sum-kg">0</strong></div>
+        <div class="stat"><small>Box kg</small><strong id="sum-box">0</strong></div>
+        <div class="stat"><small>Waste kg</small><strong id="sum-waste">0</strong></div>
+        <div class="stat"><small>Amount</small><strong id="sum-amt">0</strong></div>
+        <div class="stat"><small>Entries</small><strong id="sum-entries">0</strong></div>
+        <div class="stat"><small>Businesses served</small><strong id="sum-facs">0</strong></div>
+        <div class="stat"><small>Avg kg / day</small><strong id="sum-avg">0</strong></div>
+      </div>
+
+      <h2 id="sum-title">Report</h2>
+      <div class="table-wrap" id="sum-table-wrap"></div>
+    </section>
+
+    <!-- ============ 4 · BUSINESSES ============ -->
+    <section id="view-facilities" class="view" hidden>
+      <div class="controls no-print">
+        <input type="search" id="fac-search" class="grow" placeholder="Search businesses…"/>
+        <div class="spacer"></div>
+        <button id="fac-add" class="btn primary">Add New Business</button>
+      </div>
+      <div id="fac-list"></div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section id="view-settings" class="view" hidden>
+      <div class="settings-grid">
+        <div class="panel">
+          <h2>Preferences</h2>
+          <label class="stack">Company name (appears on printouts)
+            <input type="text" id="set-company" placeholder="e.g. CleanCycle Nigeria Ltd"/>
+          </label>
+          <label class="stack">Default rate per kg (used to work out Amounts)
+            <input type="number" id="set-rate" min="0" step="0.5"/>
+          </label>
+          <label class="stack">Currency symbol
+            <input type="text" id="set-currency" maxlength="4"/>
+          </label>
+          <label class="check"><input type="checkbox" id="set-remember"/> Remember the last “Received by” name</label>
+          <p class="hint">Changes are saved automatically.</p>
+        </div>
+
+        <div class="panel">
+          <h2>Backup &amp; Export</h2>
+          <p class="hint">Records are kept in this browser on this computer. Please download a backup file regularly — especially before clearing the browser’s history.</p>
+          <div class="btn-col">
+            <button id="backup-export" class="btn">Download Backup File (.json)</button>
+            <button id="backup-import" class="btn">Restore From Backup File</button>
+            <button id="csv-all" class="btn">Download All Entries CSV</button>
+            <button id="csv-facilities" class="btn">Download Businesses CSV</button>
+          </div>
+          <input type="file" id="import-file" accept=".json,application/json" hidden/>
+        </div>
+
+        <div class="panel">
+          <h2>Try It Out</h2>
+          <p class="hint">Load a few example entries to see how everything works. You can delete them afterwards.</p>
+          <button id="sample-load" class="btn">Load Example Entries</button>
+        </div>
+
+        <div class="panel danger-zone">
+          <h2>Be Careful</h2>
+          <p class="hint">This deletes every business and every entry from this browser. Download a backup first!</p>
+          <button id="clear-all" class="btn danger">Delete All Data</button>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<!-- business add/edit dialog -->
+<dialog id="fac-dialog" class="no-print">
+  <form id="fac-form" novalidate>
+    <h2 id="fac-dialog-title">Add Business</h2>
+    <label class="stack">Business name
+      <input type="text" id="fac-name" maxlength="80" required/>
+    </label>
+    <label class="stack">Kind of business <span class="muted">(optional)</span>
+      <input type="text" id="fac-category" maxlength="60" placeholder="Hospital, Laboratory, Company…"/>
+    </label>
+    <div class="form-actions">
+      <button type="button" class="btn ghost" id="fac-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="fac-save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- confirm dialog -->
+<dialog id="confirm-dialog" class="no-print">
+  <p id="confirm-msg"></p>
+  <div class="form-actions">
+    <button class="btn ghost" id="confirm-cancel">Cancel</button>
+    <button class="btn danger" id="confirm-ok">Yes, continue</button>
+  </div>
+</dialog>
+
+<div id="toast" class="no-print"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
