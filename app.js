@@ -70,7 +70,7 @@ const sortedFacs = () => [...state.facilities].sort((a, b) => a.name.localeCompa
    CLOUD MODE — records live in a Google Sheet (see SHEETS-SETUP.md).
    If CONFIGURED_SCRIPT_URL is empty the app runs in plain local mode.
    ===================================================================== */
-const CONFIGURED_SCRIPT_URL = '';   // ← paste the Apps Script /exec URL here
+const CONFIGURED_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyI1f5kiykIsjhdMHVYZrEWmxAA6hh6VOMlJpvUtaOVDkmfX50t72jgRBY3qqkgvMys3Q/exec';
 const SCRIPT_URL = new URLSearchParams(location.search).get('script') || CONFIGURED_SCRIPT_URL;
 const SESSION_KEY = 'wastelog.session';
 const QUEUE_KEY = 'wastelog.queue';
