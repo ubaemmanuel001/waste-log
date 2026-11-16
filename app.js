@@ -291,13 +291,48 @@ $('#entry-form').addEventListener('submit', async ev => {
   const name = comboInput.value.trim();
   if (!name) { toast('Please enter a business name', 'err'); comboInput.focus(); return; }
 
-  let fac = (comboId.value && state.facilities.find(f => f.id === comboId.value))
-         || state.facilities.find(f => f.name.toLowerCase() === name.toLowerCase());
-  const facIsNew = !fac;
-  if (!fac) {
-    fac = { id: uid(), name, category: '', createdAt: new Date().toISOString() };
-    state.facilities.push(fac);
-    toast(`New business added: ${name}`);
+  const ops = [];
+  let fac = null;
+
+  if (editingId) {
+    const existingEntry = state.entries.find(x => x.id === editingId);
+    const oldFac = existingEntry ? state.facilities.find(f => f.id === existingEntry.facilityId) : null;
+    const sameNameFac = state.facilities.find(f => f.name.toLowerCase() === name.toLowerCase());
+
+    if (sameNameFac) {
+      // Picked or typed an existing business name
+      fac = sameNameFac;
+      // If the old business had only this entry, clean up the old business so it doesn't become 0.0
+      if (oldFac && oldFac.id !== fac.id) {
+        const remainingCount = state.entries.filter(x => x.facilityId === oldFac.id && x.id !== editingId).length;
+        if (remainingCount === 0) {
+          state.facilities = state.facilities.filter(f => f.id !== oldFac.id);
+          ops.push({ type: 'facility_delete', id: oldFac.id });
+        }
+      }
+    } else if (oldFac) {
+      // Renamed the business directly on the entry: rename the business in place!
+      oldFac.name = name;
+      fac = oldFac;
+      ops.push({ type: 'facility_upsert', facility: oldFac });
+      toast(`Business renamed to “${name}” ✓`);
+    } else {
+      // New business
+      fac = { id: uid(), name, category: '', createdAt: new Date().toISOString() };
+      state.facilities.push(fac);
+      ops.push({ type: 'facility_upsert', facility: fac });
+      toast(`New business added: ${name}`);
+    }
+  } else {
+    // New entry creation
+    fac = (comboId.value && state.facilities.find(f => f.id === comboId.value))
+       || state.facilities.find(f => f.name.toLowerCase() === name.toLowerCase());
+    if (!fac) {
+      fac = { id: uid(), name, category: '', createdAt: new Date().toISOString() };
+      state.facilities.push(fac);
+      ops.push({ type: 'facility_upsert', facility: fac });
+      toast(`New business added: ${name}`);
+    }
   }
 
   const data = {
@@ -311,9 +346,6 @@ $('#entry-form').addEventListener('submit', async ev => {
     status: $('#f-status').value,
     note: $('#f-note').value.trim()
   };
-
-  const ops = [];
-  if (facIsNew) ops.push({ type: 'facility_upsert', facility: fac });
 
   let savedEntry, wasUpdate = false;
   if (editingId) {
@@ -616,6 +648,21 @@ function renderFacilities() {
 }
 $('#fac-search').addEventListener('input', renderFacilities);
 $('#fac-add').addEventListener('click', () => openFacDialog(null));
+$('#fac-clean-empty').addEventListener('click', async () => {
+  const unused = state.facilities.filter(f => !state.entries.some(e => e.facilityId === f.id));
+  if (!unused.length) {
+    toast('No unused (0.0) businesses found', 'ok');
+    return;
+  }
+  const ok = await confirmDlg(`Remove ${unused.length} unused ${unused.length === 1 ? 'business' : 'businesses'} with 0 entries?`, 'Yes, clean up');
+  if (!ok) return;
+  const ops = unused.map(f => ({ type: 'facility_delete', id: f.id }));
+  state.facilities = state.facilities.filter(f => state.entries.some(e => e.facilityId === f.id));
+  commit(...ops);
+  renderAll();
+  if (isCloud()) await flushQueue();
+  toast(`Cleaned up ${unused.length} unused business${unused.length === 1 ? '' : 'es'} ✓`);
+});
 
 let editingFac = null;
 function openFacDialog(fac) {
