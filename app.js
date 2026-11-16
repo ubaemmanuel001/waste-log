@@ -413,7 +413,7 @@ $('#recent-body').addEventListener('click', ev => {
 const regState = {
   q: '', range: 'month', from: '', to: '', facility: '', status: '',
   sortKey: 'date', sortDir: -1,
-  pageSize: 50,
+  pageSize: 20,
   page: 1,
   selected: new Set()
 };
@@ -496,7 +496,7 @@ function renderRegister() {
 
   // Pagination calculation
   const isAll = regState.pageSize === 'all';
-  const size = isAll ? Math.max(1, totalCount) : Number(regState.pageSize || 50);
+  const size = isAll ? Math.max(1, totalCount) : Number(regState.pageSize || 20);
   const totalPages = Math.max(1, Math.ceil(totalCount / size));
   if (regState.page > totalPages) regState.page = totalPages;
   if (regState.page < 1) regState.page = 1;
@@ -595,7 +595,7 @@ $('#reg-pg-next').addEventListener('click', () => {
 $('#reg-select-all').addEventListener('change', e => {
   const allRows = filteredEntries();
   const isAll = regState.pageSize === 'all';
-  const size = isAll ? Math.max(1, allRows.length) : Number(regState.pageSize || 50);
+  const size = isAll ? Math.max(1, allRows.length) : Number(regState.pageSize || 20);
   const startIdx = isAll ? 0 : (regState.page - 1) * size;
   const pageRows = isAll ? allRows : allRows.slice(startIdx, startIdx + size);
 
