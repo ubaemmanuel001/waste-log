@@ -66,6 +66,63 @@ let state = loadState();
 const facName = id => { const f = state.facilities.find(f => f.id === id); return f ? f.name : '(deleted business)'; };
 const sortedFacs = () => [...state.facilities].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 
+/* =====================================================================
+   CLOUD MODE — records live in a Google Sheet (see SHEETS-SETUP.md).
+   If CONFIGURED_SCRIPT_URL is empty the app runs in plain local mode.
+   ===================================================================== */
+const CONFIGURED_SCRIPT_URL = '';   // ← paste the Apps Script /exec URL here
+const SCRIPT_URL = new URLSearchParams(location.search).get('script') || CONFIGURED_SCRIPT_URL;
+const SESSION_KEY = 'wastelog.session';
+const QUEUE_KEY = 'wastelog.queue';
+
+const isCloud = () => SCRIPT_URL.length > 0;
+const isAdmin = () => !isCloud() || (!!getSession() && getSession().role === 'admin');
+
+function getSession() { try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch (e) { return null; } }
+function setSession(s) { if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s)); else localStorage.removeItem(SESSION_KEY); }
+function getQueue() { try { return JSON.parse(localStorage.getItem(QUEUE_KEY)) || []; } catch (e) { return []; } }
+function saveQueue(q) { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); }
+
+async function cloudCall(action, payload = {}) {
+  const s = getSession();
+  const res = await fetch(SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },  // keeps it a "simple request" (no CORS preflight)
+    body: JSON.stringify({ action, token: s && s.token, ...payload })
+  });
+  const out = await res.json();
+  if (out && out.error === 'AUTH') { setSession(null); updateAuthUI(); showLoginScreen(); throw new Error('AUTH'); }
+  return out;
+}
+
+/** All flushes run one after another so nothing is ever sent twice. */
+let flushChain = Promise.resolve();
+function flushQueue() {
+  if (!isCloud()) return Promise.resolve();
+  flushChain = flushChain.then(async () => {
+    const q = getQueue();
+    if (!q.length) return;
+    try {
+      const out = await cloudCall('mutate', { ops: q });
+      if (out && out.ok) saveQueue([]);
+    } catch (e) { /* offline or session ended — the queue keeps the work safe */ }
+  });
+  return flushChain;
+}
+
+/** Every change to records goes through here: save locally + queue for the cloud. */
+function commit(...ops) {
+  saveState();
+  if (!isCloud() || !ops.length) return;
+  saveQueue(getQueue().concat(ops));
+  flushQueue();
+}
+const replaceAllOp = () => ({ type: 'replace_all', facilities: state.facilities, entries: state.entries, settings: state.settings });
+
+/* retry queued work now and then, in case of failed pushes */
+setInterval(flushQueue, 30000);
+window.addEventListener('online', flushQueue);
+
 /* ---------------- toast + confirm ---------------- */
 function toast(msg, type = 'ok') {
   const t = document.createElement('div');
@@ -229,13 +286,14 @@ function fillForm(e) {
   $('#f-note').value = e.note || '';
 }
 
-$('#entry-form').addEventListener('submit', ev => {
+$('#entry-form').addEventListener('submit', async ev => {
   ev.preventDefault();
   const name = comboInput.value.trim();
-  if (!name) { toast('Please enter a facility name', 'err'); comboInput.focus(); return; }
+  if (!name) { toast('Please enter a business name', 'err'); comboInput.focus(); return; }
 
   let fac = (comboId.value && state.facilities.find(f => f.id === comboId.value))
          || state.facilities.find(f => f.name.toLowerCase() === name.toLowerCase());
+  const facIsNew = !fac;
   if (!fac) {
     fac = { id: uid(), name, category: '', createdAt: new Date().toISOString() };
     state.facilities.push(fac);
@@ -254,25 +312,35 @@ $('#entry-form').addEventListener('submit', ev => {
     note: $('#f-note').value.trim()
   };
 
+  const ops = [];
+  if (facIsNew) ops.push({ type: 'facility_upsert', facility: fac });
+
+  let savedEntry, wasUpdate = false;
   if (editingId) {
     const i = state.entries.findIndex(x => x.id === editingId);
     if (i > -1) state.entries[i] = { ...state.entries[i], ...data };
-    showBanner(`✓ Entry updated — <strong>${esc(fac.name)}</strong>: ${kg(round2(data.boxKg + data.wasteKg))} kg, ${money(data.amount)}`);
+    savedEntry = state.entries[i];
+    wasUpdate = true;
+    ops.push({ type: 'entry_upsert', entry: savedEntry });
   } else {
-    state.entries.push({ id: uid(), ...data, createdAt: new Date().toISOString() });
-    showBanner(`✓ Saved — <strong>${esc(fac.name)}</strong>: ${kg(round2(data.boxKg + data.wasteKg))} kg, ${money(data.amount)}`);
+    savedEntry = { id: uid(), ...data, createdAt: new Date().toISOString() };
+    state.entries.push(savedEntry);
+    ops.push({ type: 'entry_upsert', entry: savedEntry });
   }
 
   if (state.settings.rememberReceivedBy && data.receivedBy) state.settings.lastReceivedBy = data.receivedBy;
-  saveState();
+  commit(...ops);
   resetForm();
   renderAll();
   comboInput.focus();
+  if (isCloud()) await flushQueue();
+  const offline = isCloud() && getQueue().length > 0;
+  showBanner(`✓ ${wasUpdate ? 'Entry updated' : 'Saved'} — <strong>${esc(fac.name)}</strong>: ${kg(round2(data.boxKg + data.wasteKg))} kg, ${money(data.amount)}${offline ? ' <small>(offline — it will sync automatically)</small>' : ''}`);
 });
 $('#cancel-edit-btn').addEventListener('click', () => { resetForm(); renderAll(); toast('Edit cancelled'); });
 
 /* entry edit / delete (shared by recent + register) */
-function handleEntryAction(id, act) {
+async function handleEntryAction(id, act) {
   const e = state.entries.find(x => x.id === id);
   if (!e) return;
   if (act === 'edit') {
@@ -281,12 +349,11 @@ function handleEntryAction(id, act) {
     switchView('entry');
     toast(`Editing entry — ${facName(e.facilityId)}, ${fmtDate(e.date)}`);
   } else if (act === 'del') {
-    confirmDlg(`Delete the entry for “${facName(e.facilityId)}” on ${fmtDate(e.date)}? This cannot be undone.`, 'Yes, delete it')
-      .then(ok => {
-        if (!ok) return;
-        state.entries = state.entries.filter(x => x.id !== id);
-        saveState(); renderAll(); toast('Entry deleted');
-      });
+    const ok = await confirmDlg(`Delete the entry for “${facName(e.facilityId)}” on ${fmtDate(e.date)}? This cannot be undone.`, 'Yes, delete it');
+    if (!ok) return;
+    state.entries = state.entries.filter(x => x.id !== id);
+    commit({ type: 'entry_delete', id });
+    renderAll(); toast('Entry deleted');
   }
 }
 
@@ -573,7 +640,8 @@ $('#fac-form').addEventListener('submit', e => {
     state.facilities.push({ id: uid(), name, category, createdAt: new Date().toISOString() });
     toast(`Business added: ${name} ✓`);
   }
-  saveState(); renderAll();
+  commit({ type: 'facility_upsert', facility: editingFac || state.facilities[state.facilities.length - 1] });
+  renderAll();
   $('#fac-dialog').close();
 });
 $('#fac-cancel').addEventListener('click', () => $('#fac-dialog').close());
@@ -591,7 +659,8 @@ $('#fac-list').addEventListener('click', async e => {
     const ok = await confirmDlg(`Delete business “${fac.name}”? It has no entries.`, 'Yes, delete it');
     if (!ok) return;
     state.facilities = state.facilities.filter(f => f.id !== id);
-    saveState(); renderAll(); toast('Business deleted');
+    commit({ type: 'facility_delete', id });
+    renderAll(); toast('Business deleted');
   }
 });
 
@@ -688,10 +757,11 @@ $('#import-file').addEventListener('change', e => {
     try {
       const data = JSON.parse(reader.result);
       if (!Array.isArray(data.facilities) || !Array.isArray(data.entries)) throw new Error('bad file');
-      const ok = await confirmDlg(`Restore backup? This replaces everything currently in the app with the backup from ${file.name}.`, 'Yes, restore it');
+      const ok = await confirmDlg(`Restore backup? This replaces everything currently in the log book with the backup from ${file.name}.`, 'Yes, restore it');
       if (!ok) return;
       state = { facilities: data.facilities, entries: data.entries, settings: Object.assign({}, DEFAULT_SETTINGS, data.settings || {}) };
-      saveState();
+      saveQueue([]);
+      commit(replaceAllOp());
       resetForm();
       sumState.month = monthKeyOf();
       renderAll();
@@ -722,30 +792,37 @@ $('#sum-print').addEventListener('click', () => {
 function updateBrand() {
   $('#brand-sub').textContent = state.settings.company || 'Kilograms of waste collected from businesses';
 }
+const commitSettingsSoon = (() => {
+  let t;
+  return () => { clearTimeout(t); t = setTimeout(() => commit({ type: 'settings_save', settings: state.settings }), 700); };
+})();
 function renderSettings() {
   $('#set-company').value = state.settings.company;
   $('#set-rate').value = state.settings.rate;
   $('#set-currency').value = state.settings.currency;
   $('#set-remember').checked = state.settings.rememberReceivedBy;
+  renderUsers();   // staff list only loads in cloud mode for admins
 }
-$('#set-company').addEventListener('input', e => { state.settings.company = e.target.value.trim(); saveState(); updateBrand(); });
+$('#set-company').addEventListener('input', e => { state.settings.company = e.target.value.trim(); commitSettingsSoon(); updateBrand(); });
 $('#set-rate').addEventListener('change', e => {
   state.settings.rate = Math.max(0, num(e.target.value));
-  saveState();
+  commitSettingsSoon();
   if (!editingId) { $('#f-rate').value = state.settings.rate; recalc(); }
   toast('Default rate updated');
 });
 $('#set-currency').addEventListener('input', e => {
   state.settings.currency = e.target.value || '₦';
-  saveState(); renderAll();
+  commitSettingsSoon(); renderAll();
 });
-$('#set-remember').addEventListener('change', e => { state.settings.rememberReceivedBy = e.target.checked; saveState(); });
+$('#set-remember').addEventListener('change', e => { state.settings.rememberReceivedBy = e.target.checked; commitSettingsSoon(); });
 
 $('#clear-all').addEventListener('click', async () => {
-  const ok = await confirmDlg('Delete ALL facilities and entries from this browser? This cannot be undone. Export a backup first!', 'Yes, delete everything');
+  const ok = await confirmDlg('Delete ALL businesses and entries? This cannot be undone. Download a backup first!', 'Yes, delete everything');
   if (!ok) return;
   state = freshState();
-  saveState(); resetForm(); sumState.month = monthKeyOf(); renderAll();
+  saveQueue([]);
+  commit(replaceAllOp());
+  resetForm(); sumState.month = monthKeyOf(); renderAll();
   toast('All data deleted');
 });
 
@@ -790,8 +867,10 @@ function loadSampleData() {
       createdAt: new Date(date + 'T10:0' + (i % 10) + ':00').toISOString()
     });
   });
-  saveState(); resetForm(); renderAll();
-  toast('Sample data loaded — explore the tabs! 🎉');
+  saveQueue([]);
+  commit(replaceAllOp());
+  resetForm(); renderAll();
+  toast('Example entries loaded ✓');
 }
 
 /* ---------------- boot ---------------- */
@@ -810,17 +889,121 @@ $('#tabs').addEventListener('click', e => {
   if (t) switchView(t.dataset.view);
 });
 
+function showLoginScreen() { $('#login-screen').hidden = false; }
+
+function enterApp() {
+  $('#login-screen').hidden = true;
+  updateAuthUI();
+  renderAll();
+  switchView('entry');
+  if (document.activeElement) document.activeElement.blur();
+}
+
+async function bootCloud() {
+  await flushQueue();                       // push anything saved while offline
+  try {
+    const out = await cloudCall('getData');
+    if (out && out.ok && out.data) {
+      state.facilities = out.data.facilities || [];
+      state.entries = out.data.entries || [];
+      state.settings = Object.assign({}, DEFAULT_SETTINGS, out.data.settings || {});
+      saveState();
+      resetForm();
+      $('#sum-month').value = sumState.month = monthKeyOf();
+    }
+  } catch (e) {
+    if (e && e.message === 'AUTH') return;  // login screen already showing
+    toast('Working offline — changes will sync when the connection returns', 'err');
+  }
+  enterApp();
+}
+
+function updateAuthUI() {
+  const s = getSession();
+  $('#logout-link').hidden = !isCloud();
+  if (isCloud() && s) $('#logout-link').textContent = 'Log out — ' + s.name;
+  $('#open-settings').hidden = !isAdmin();
+  if (!isAdmin() && !$('#view-settings').hidden) switchView('entry');
+  $('#staff-panel').hidden = !(isCloud() && isAdmin());
+}
+
+function doLogout() { setSession(null); showLoginScreen(); }
+$('#logout-link').addEventListener('click', doLogout);
+
+/* ---------------- staff & access (admin, cloud mode) ---------------- */
+async function renderUsers() {
+  if (!isCloud() || !isAdmin()) return;
+  const body = $('#users-body');
+  body.innerHTML = '<tr><td>Loading…</td></tr>';
+  try {
+    const out = await cloudCall('listUsers');
+    if (!out.ok) { body.innerHTML = `<tr><td class="muted">${esc(out.error || 'Error loading users')}</td></tr>`; return; }
+    body.innerHTML = out.users.map(u => `
+      <tr data-email="${esc(u.email)}">
+        <td><strong>${esc(u.name)}</strong><br><small>${esc(u.email)}</small></td>
+        <td class="muted">${u.role === 'admin' ? 'Administrator' : 'Staff'}</td>
+        <td class="acts">${u.email === getSession().email ? '<small>you</small>' : `<button class="tbtn danger" data-email="${esc(u.email)}">Remove</button>`}</td>
+      </tr>`).join('');
+  } catch (e) {
+    body.innerHTML = '<tr><td class="muted">Could not reach the log book — check the connection.</td></tr>';
+  }
+}
+$('#users-body').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-email]');
+  if (!b) return;
+  const ok = await confirmDlg(`Remove access for ${b.dataset.email}? They will be signed out everywhere.`, 'Yes, remove access');
+  if (!ok) return;
+  const out = await cloudCall('deleteUser', { email: b.dataset.email });
+  if (!out.ok) { toast(out.error || 'Could not remove that user', 'err'); return; }
+  toast('Access removed');
+  renderUsers();
+});
+$('#user-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const name = $('#u-name').value.trim(), email = $('#u-email').value.trim().toLowerCase(), pass = $('#u-pass').value;
+  if (pass.length < 6) { toast('Password must be at least 6 characters', 'err'); return; }
+  const out = await cloudCall('addUser', { name, email, password: pass, role: 'staff' });
+  if (!out.ok) { toast(out.error || 'Could not add that staff account', 'err'); return; }
+  $('#u-name').value = $('#u-email').value = $('#u-pass').value = '';
+  toast(`Staff account created for ${name} ✓`);
+  renderUsers();
+});
+
+$('#login-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = $('#login-btn'), err = $('#login-error');
+  err.hidden = true;
+  btn.disabled = true; btn.textContent = 'Signing in…';
+  try {
+    const out = await cloudCall('login', { email: $('#l-email').value.trim(), password: $('#l-password').value });
+    if (!out.ok) throw new Error(out.error || 'Could not sign in');
+    setSession({ token: out.token, email: out.email, name: out.name, role: out.role });
+    $('#l-password').value = '';
+    await bootCloud();
+    toast(`Welcome, ${out.name}!`);
+  } catch (ex) {
+    err.textContent = (ex.message === 'AUTH') ? 'Your session expired — please sign in again.' : (ex.message || 'Could not sign in. Check the connection and try again.');
+    err.hidden = false;
+  }
+  btn.disabled = false; btn.textContent = 'Sign In';
+});
+
 resetForm();
 sumState.month = monthKeyOf();
 $('#sum-month').value = sumState.month;
 renderAll();
-switchView('entry');
-if (document.activeElement) document.activeElement.blur(); // don't auto-open the dropdown on load
+
+if (isCloud()) {
+  const sess = getSession();
+  if (sess && sess.token) bootCloud(); else showLoginScreen();
+} else {
+  enterApp();
+}
 
 if (!state.settings.welcomed) {
   state.settings.welcomed = true;
   saveState();
-  if (!state.entries.length) {
+  if (!state.entries.length && !isCloud()) {
     setTimeout(() => toast('Welcome! Open “Settings & Backup” (top right) to load example entries and try it out.'), 600);
   }
 }

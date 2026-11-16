@@ -10,6 +10,7 @@
   --green-ink:#1f4230;
   --green-soft:#e8efe3;
   --red:#a63a2a;
+  --red-soft:#f7e7e2;
   --amber:#8a6a1f;
   --radius:10px;
 }
@@ -37,6 +38,36 @@ small{color:var(--muted)}
   text-decoration:underline;text-underline-offset:3px;cursor:pointer;padding:6px 2px;
 }
 .settings-link:hover,.settings-link.active{color:var(--green-ink)}
+.topbar-actions{display:flex;gap:18px;align-items:center}
+#logout-link{font-weight:700}
+
+/* ---------- sign-in overlay ---------- */
+.login-wrap{
+  position:fixed;inset:0;z-index:200;background:var(--paper);
+  display:flex;align-items:center;justify-content:center;padding:20px;
+}
+.login-card{
+  width:min(420px,94vw);background:var(--card);
+  border:1px solid var(--line-strong);border-radius:14px;
+  box-shadow:0 4px 20px -8px rgba(70,58,30,.4);
+  padding:34px 34px 30px;
+}
+.login-card h1{margin:0 0 4px;font-size:26px}
+.login-sub{margin:0 0 22px;color:var(--muted);font-size:15px}
+.login-card label{margin-bottom:14px}
+.login-error{
+  background:var(--red-soft,#f7e7e2);border:1.5px solid var(--red);
+  color:var(--red);border-radius:7px;padding:10px 14px;font-size:14.5px;margin-bottom:14px;
+}
+.login-card .btn{width:100%;justify-content:center;margin-top:4px}
+
+/* ---------- staff panel ---------- */
+h3.sub{font-family:Georgia,serif;font-size:15.5px;margin:18px 0 8px;border-top:1px solid var(--line);padding-top:14px}
+.user-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.user-form input{min-height:42px}
+.user-form .btn{grid-column:span 2;justify-content:center}
+.user-form #u-name{grid-column:span 2}
+@media (max-width:480px){.user-form{grid-template-columns:1fr}.user-form #u-name,.user-form .btn{grid-column:span 1}}
 
 /* ---------- folder tabs ---------- */
 .maintabs{display:flex;gap:8px;max-width:1150px;margin:0 auto;padding:18px 20px 0;flex-wrap:wrap}

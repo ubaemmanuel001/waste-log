@@ -1,7 +1,14 @@
 # 📒 The Waste Log Book
 
 A simple site for logging waste KG per business — built to replace the paper log book.
-No installation, no internet, no monthly fees. **Just double-click `index.html`.**
+No installation, no internet needed for the basic version, no monthly fees. **Just double-click `index.html`.**
+
+It runs in two modes:
+
+- **Local mode** (as shipped): records live in the browser on that computer.
+- **Cloud mode** (once the Google Sheet backend is connected): records live in a private
+  Google Sheet, everyone signs in with an email + password, and all devices see the same data.
+  Setup guide: **SHEETS-SETUP.md** (takes about 5 minutes).
 
 ---
 
@@ -47,13 +54,15 @@ No installation, no internet, no monthly fees. **Just double-click `index.html`.
 - **Settings & Backup → Download Backup File** — a full copy of everything. **Do this weekly.**
   Restore it any time with *Restore From Backup File* (for example, on a new computer).
 
-## ⚠️ The one rule
+## ⚠️ The one rule (local mode)
 
 Records live in the **browser on that computer** (that's why no internet is needed). So:
 
 - Always use the **same browser** on the same computer.
 - **Clearing the browser's history/site data erases it** — keep regular backups!
 - If the computer is lost, a backup file brings everything back in one click.
+
+*(In cloud mode these worries disappear: the Google Sheet holds everything, sign-in works on any device.)*
 
 ---
 

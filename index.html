@@ -11,13 +11,32 @@
 
 <div id="print-header" class="print-only"></div>
 
+<!-- sign-in overlay (cloud mode only) -->
+<div id="login-screen" class="login-wrap" hidden>
+  <form id="login-form" class="login-card" autocomplete="off">
+    <h1>The Waste Log Book</h1>
+    <p class="login-sub">Sign in to open your log book</p>
+    <label>Email
+      <input type="email" id="l-email" required autocomplete="username"/>
+    </label>
+    <label>Password
+      <input type="password" id="l-password" required autocomplete="current-password"/>
+    </label>
+    <div id="login-error" class="login-error" hidden></div>
+    <button type="submit" class="btn primary big" id="login-btn">Sign In</button>
+  </form>
+</div>
+
 <header class="topbar no-print">
   <div class="topbar-inner">
     <div class="brand">
       <h1>The Waste Log Book</h1>
       <p id="brand-sub">Kilograms of waste collected from businesses</p>
     </div>
-    <button id="open-settings" class="settings-link">Settings &amp; Backup</button>
+    <div class="topbar-actions">
+      <button id="logout-link" class="settings-link" hidden></button>
+      <button id="open-settings" class="settings-link">Settings &amp; Backup</button>
+    </div>
   </div>
 </header>
 
@@ -245,9 +264,22 @@
           <button id="sample-load" class="btn">Load Example Entries</button>
         </div>
 
+        <div class="panel" id="staff-panel" hidden>
+          <h2>Staff &amp; Access</h2>
+          <p class="hint">People listed here can sign in to this log book from any device. Remove someone and their access stops immediately.</p>
+          <table class="mini"><tbody id="users-body"></tbody></table>
+          <h3 class="sub">Add staff</h3>
+          <form id="user-form" class="user-form" autocomplete="off">
+            <input type="text" id="u-name" placeholder="Full name" required/>
+            <input type="email" id="u-email" placeholder="Email address" required/>
+            <input type="password" id="u-pass" placeholder="Password (6+ characters)" required minlength="6"/>
+            <button class="btn" type="submit">Add Staff</button>
+          </form>
+        </div>
+
         <div class="panel danger-zone">
           <h2>Be Careful</h2>
-          <p class="hint">This deletes every business and every entry from this browser. Download a backup first!</p>
+          <p class="hint">This deletes every business and every entry. Download a backup first!</p>
           <button id="clear-all" class="btn danger">Delete All Data</button>
         </div>
       </div>
