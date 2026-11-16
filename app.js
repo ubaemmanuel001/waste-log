@@ -410,7 +410,13 @@ $('#recent-body').addEventListener('click', ev => {
 });
 
 /* ---------------- log book (register) ---------------- */
-const regState = { q: '', range: 'month', from: '', to: '', facility: '', status: '', sortKey: 'date', sortDir: -1 };
+const regState = {
+  q: '', range: 'month', from: '', to: '', facility: '', status: '',
+  sortKey: 'date', sortDir: -1,
+  pageSize: 50,
+  page: 1,
+  selected: new Set()
+};
 
 function regRange() {
   const t = todayStr();
@@ -461,6 +467,18 @@ function filteredEntries() {
   return rows;
 }
 
+function updateBatchBar() {
+  const bar = $('#batch-bar');
+  const count = regState.selected.size;
+  if (!bar) return;
+  if (count > 0) {
+    bar.classList.remove('hidden');
+    $('#batch-selected-count').textContent = `${count} ${count === 1 ? 'entry' : 'entries'} selected`;
+  } else {
+    bar.classList.add('hidden');
+  }
+}
+
 function renderRegister() {
   // facility filter options
   const sel = $('#reg-facility');
@@ -472,11 +490,35 @@ function renderRegister() {
     $('.dir', th).textContent = th.dataset.sort === regState.sortKey ? (regState.sortDir === 1 ? '▲' : '▼') : '';
   });
 
-  const rows = filteredEntries();
-  $('#reg-empty').hidden = rows.length > 0;
-  $('#reg-body').innerHTML = rows.map((e, i) => `
-    <tr data-id="${e.id}">
-      <td class="num muted">${i + 1}</td>
+  const allRows = filteredEntries();
+  const totalCount = allRows.length;
+  $('#reg-empty').hidden = totalCount > 0;
+
+  // Pagination calculation
+  const isAll = regState.pageSize === 'all';
+  const size = isAll ? Math.max(1, totalCount) : Number(regState.pageSize || 50);
+  const totalPages = Math.max(1, Math.ceil(totalCount / size));
+  if (regState.page > totalPages) regState.page = totalPages;
+  if (regState.page < 1) regState.page = 1;
+
+  const startIdx = isAll ? 0 : (regState.page - 1) * size;
+  const endIdx = isAll ? totalCount : Math.min(startIdx + size, totalCount);
+  const pageRows = isAll ? allRows : allRows.slice(startIdx, endIdx);
+
+  // Clean selected set of deleted/missing entries
+  const currentIds = new Set(state.entries.map(e => e.id));
+  for (const id of regState.selected) {
+    if (!currentIds.has(id)) regState.selected.delete(id);
+  }
+
+  $('#reg-body').innerHTML = pageRows.map((e, idx) => {
+    const isChecked = regState.selected.has(e.id);
+    return `
+    <tr data-id="${e.id}" class="${isChecked ? 'selected-row' : ''}">
+      <td class="chk-col no-print">
+        <input type="checkbox" class="reg-row-chk" data-id="${e.id}" ${isChecked ? 'checked' : ''}/>
+      </td>
+      <td class="num muted">${startIdx + idx + 1}</td>
       <td style="white-space:nowrap">${fmtDate(e.date)}</td>
       <td>${dayName(e.date)}</td>
       <td><strong>${esc(facName(e.facilityId))}</strong>${e.note ? `<div class="note">📝 ${esc(e.note)}</div>` : ''}</td>
@@ -491,30 +533,166 @@ function renderRegister() {
         <button class="tbtn" data-act="edit">Edit</button>
         <button class="tbtn danger" data-act="del">Delete</button>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
-  // totals
-  const box = rows.reduce((s, e) => s + e.boxKg, 0);
-  const waste = rows.reduce((s, e) => s + e.wasteKg, 0);
-  const amt = rows.reduce((s, e) => s + e.amount, 0);
-  $('#reg-cnt').textContent = `${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}`;
+  // Update header checkbox
+  const chkAll = $('#reg-select-all');
+  if (chkAll) {
+    const allPageChecked = pageRows.length > 0 && pageRows.every(e => regState.selected.has(e.id));
+    const somePageChecked = pageRows.some(e => regState.selected.has(e.id));
+    chkAll.checked = allPageChecked;
+    chkAll.indeterminate = !allPageChecked && somePageChecked;
+  }
+
+  // totals (filtered sum across all pages)
+  const box = allRows.reduce((s, e) => s + e.boxKg, 0);
+  const waste = allRows.reduce((s, e) => s + e.wasteKg, 0);
+  const amt = allRows.reduce((s, e) => s + e.amount, 0);
+  $('#reg-cnt').textContent = `${totalCount} ${totalCount === 1 ? 'entry' : 'entries'}`;
   $('#t-box').textContent = kg(round2(box));
   $('#t-waste').textContent = kg(round2(waste));
   $('#t-total').textContent = kg(round2(box + waste));
   $('#t-amount').textContent = money(round2(amt));
+
+  // Pagination UI controls
+  $('#reg-page-size').value = String(regState.pageSize);
+  $('#reg-page-info').textContent = totalCount ? `Showing ${startIdx + 1}–${endIdx} of ${totalCount}` : 'Showing 0–0 of 0';
+  $('#reg-pg-current').textContent = `Page ${regState.page} of ${totalPages}`;
+  $('#reg-pg-prev').disabled = regState.page <= 1;
+  $('#reg-pg-next').disabled = regState.page >= totalPages;
+
+  updateBatchBar();
 }
 
 /* register events */
-$('#reg-search').addEventListener('input', e => { regState.q = e.target.value; renderRegister(); });
+$('#reg-search').addEventListener('input', e => { regState.q = e.target.value; regState.page = 1; renderRegister(); });
 $('#reg-range').addEventListener('change', e => {
   regState.range = e.target.value;
+  regState.page = 1;
   $('#reg-custom').classList.toggle('hidden', regState.range !== 'custom');
   renderRegister();
 });
-$('#reg-from').addEventListener('change', e => { regState.from = e.target.value; renderRegister(); });
-$('#reg-to').addEventListener('change', e => { regState.to = e.target.value; renderRegister(); });
-$('#reg-facility').addEventListener('change', e => { regState.facility = e.target.value; renderRegister(); });
-$('#reg-status').addEventListener('change', e => { regState.status = e.target.value; renderRegister(); });
+$('#reg-from').addEventListener('change', e => { regState.from = e.target.value; regState.page = 1; renderRegister(); });
+$('#reg-to').addEventListener('change', e => { regState.to = e.target.value; regState.page = 1; renderRegister(); });
+$('#reg-facility').addEventListener('change', e => { regState.facility = e.target.value; regState.page = 1; renderRegister(); });
+$('#reg-status').addEventListener('change', e => { regState.status = e.target.value; regState.page = 1; renderRegister(); });
+
+$('#reg-page-size').addEventListener('change', e => {
+  regState.pageSize = e.target.value === 'all' ? 'all' : Number(e.target.value);
+  regState.page = 1;
+  renderRegister();
+});
+$('#reg-pg-prev').addEventListener('click', () => {
+  if (regState.page > 1) { regState.page--; renderRegister(); }
+});
+$('#reg-pg-next').addEventListener('click', () => {
+  regState.page++;
+  renderRegister();
+});
+
+// Selection handling
+$('#reg-select-all').addEventListener('change', e => {
+  const allRows = filteredEntries();
+  const isAll = regState.pageSize === 'all';
+  const size = isAll ? Math.max(1, allRows.length) : Number(regState.pageSize || 50);
+  const startIdx = isAll ? 0 : (regState.page - 1) * size;
+  const pageRows = isAll ? allRows : allRows.slice(startIdx, startIdx + size);
+
+  if (e.target.checked) {
+    pageRows.forEach(r => regState.selected.add(r.id));
+  } else {
+    pageRows.forEach(r => regState.selected.delete(r.id));
+  }
+  renderRegister();
+});
+
+$('#reg-table').addEventListener('change', e => {
+  if (e.target.classList.contains('reg-row-chk')) {
+    const id = e.target.dataset.id;
+    if (e.target.checked) regState.selected.add(id);
+    else regState.selected.delete(id);
+    renderRegister();
+  }
+});
+
+$('#batch-clear-btn').addEventListener('click', () => {
+  regState.selected.clear();
+  renderRegister();
+});
+
+// Batch Delete
+$('#batch-delete-btn').addEventListener('click', async () => {
+  const ids = Array.from(regState.selected);
+  if (!ids.length) return;
+  const ok = await confirmDlg(`Delete ${ids.length} selected ${ids.length === 1 ? 'entry' : 'entries'}? This cannot be undone.`, 'Yes, delete all');
+  if (!ok) return;
+
+  const idSet = new Set(ids);
+  state.entries = state.entries.filter(e => !idSet.has(e.id));
+  const ops = ids.map(id => ({ type: 'entry_delete', id }));
+  regState.selected.clear();
+  commit(...ops);
+  renderAll();
+  if (isCloud()) await flushQueue();
+  toast(`Deleted ${ids.length} ${ids.length === 1 ? 'entry' : 'entries'} ✓`);
+});
+
+// Batch Edit Dialog
+$('#batch-edit-btn').addEventListener('click', () => {
+  if (!regState.selected.size) return;
+  $('#be-date').value = '';
+  $('#be-status').value = '';
+  $('#be-rate').value = '';
+  $('#be-received').value = '';
+  $('#be-note').value = '';
+  $('#batch-edit-dialog').showModal();
+});
+$('#be-cancel').addEventListener('click', () => $('#batch-edit-dialog').close());
+
+$('#batch-edit-form').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const ids = Array.from(regState.selected);
+  if (!ids.length) { $('#batch-edit-dialog').close(); return; }
+
+  const newDate = $('#be-date').value;
+  const newStatus = $('#be-status').value;
+  const rateVal = $('#be-rate').value.trim();
+  const newRate = rateVal !== '' ? num(rateVal) : null;
+  const receivedVal = $('#be-received').value.trim();
+  const noteVal = $('#be-note').value.trim();
+
+  if (!newDate && !newStatus && newRate === null && !receivedVal && !noteVal) {
+    toast('No fields were changed', 'err');
+    return;
+  }
+
+  const ops = [];
+  let updatedCount = 0;
+  state.entries = state.entries.map(e => {
+    if (!regState.selected.has(e.id)) return e;
+    const updated = { ...e };
+    if (newDate) updated.date = newDate;
+    if (newStatus) updated.status = newStatus;
+    if (newRate !== null) {
+      updated.rate = newRate;
+      updated.amount = round2((updated.boxKg + updated.wasteKg) * newRate);
+    }
+    if (receivedVal) updated.receivedBy = receivedVal;
+    if (noteVal) updated.note = noteVal;
+    ops.push({ type: 'entry_upsert', entry: updated });
+    updatedCount++;
+    return updated;
+  });
+
+  commit(...ops);
+  $('#batch-edit-dialog').close();
+  regState.selected.clear();
+  renderAll();
+  if (isCloud()) await flushQueue();
+  toast(`Updated ${updatedCount} ${updatedCount === 1 ? 'entry' : 'entries'} ✓`);
+});
+
 $('#reg-table').addEventListener('click', e => {
   const th = e.target.closest('th.sortable');
   if (th) {
